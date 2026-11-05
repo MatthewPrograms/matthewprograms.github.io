@@ -26,8 +26,8 @@ textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; resize: vertic
 .bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
 .bar .sep { width: 1px; height: 20px; background: #3a3a3a; margin: 0 2px; }
 input[type=color] { width: 30px; height: 26px; padding: 1px; cursor: pointer; }
-input[type=number] { width: 58px; padding: 3px 6px; }
-select { padding: 3px 4px; max-width: 170px; }
+input[type=number] { width: 46px; padding: 3px 6px; }
+select { padding: 3px 4px; max-width: 130px; }
 button { padding: 3px 9px; cursor: pointer; }
 button:hover { background: #333; border-color: #666; }
 #swatches { display: inline-flex; gap: 4px; }
@@ -43,6 +43,8 @@ button.on { background: #e8a33d; border-color: #e8a33d; color: #1e1e1e; }
   min-height: 40px; padding: 8px; border: 1px solid #444; border-radius: 4px;
   background: #4a4a4a; white-space: pre-wrap; overflow-wrap: anywhere;
 }
+.opts { font-size: 12px; color: #999; gap: 12px; }
+.opts input { vertical-align: -2px; margin: 0 2px 0 0; }
 #scope { font-size: 12px; color: #999; margin-top: 6px; }
 .outrow { display: flex; gap: 6px; align-items: stretch; }
 .outrow button { flex: none; width: 70px; }
@@ -161,15 +163,30 @@ button.on { background: #e8a33d; border-color: #e8a33d; color: #1e1e1e; }
     <button id="nocolor" title="No color attribute">none</button>
     <span class="sep"></span>
     <input type="number" id="size" min="1" step="1" placeholder="size" title="Size (blank = unset)">
+    <input type="number" id="tr" min="0" max="1" step="0.05" placeholder="tr" title="Text transparency, 0-1 (blank = unset)">
     <select id="face" title="Font face"></select>
     <span class="sep"></span>
     <button id="b" title="Bold">B</button>
     <button id="i" title="Italic">I</button>
     <button id="u" title="Underline">U</button>
     <button id="s" title="Strikethrough">S</button>
-    <span class="sep"></span>
+  </div>
+  <div class="bar">
     <button id="hl">highlight</button>
     <input type="color" id="hlcolor" value="#000000" title="Highlight color">
+    <button id="hlcolordef" title="Omit the color so Roblox uses its default (unverified)">default*</button>
+    <input type="number" id="hltr" min="0" max="1" step="0.05" placeholder="tr" title="Highlight transparency, 0-1 (blank = unset)">
+    <span class="sep"></span>
+    <button id="st">stroke</button>
+    <input type="color" id="stcolor" value="#000000" title="Stroke color">
+    <button id="stcolordef" title="Omit the color so Roblox uses its default (unverified)">default*</button>
+    <input type="number" id="stth" min="0" step="0.5" placeholder="th" title="Stroke thickness (blank = unset)">
+    <input type="number" id="sttr" min="0" max="1" step="0.05" placeholder="tr" title="Stroke transparency, 0-1 (blank = unset)">
+  </div>
+  <div class="bar opts">
+    <label><input type="checkbox" id="shorthex"> short hex #ABC*</label>
+    <label><input type="checkbox" id="trshort"> tr on highlight/text*</label>
+    <span>* not in Roblox&apos;s docs; test in Studio first</span>
   </div>
 
   <div id="scope"></div>
@@ -224,20 +241,30 @@ var PRESETS =["#FF0000", "#FFD700", "#808080", "#FFFFFF", "#000000"];
 // Every character carries its own style. Toolbar changes apply to the selected
 // characters, or to the whole text when nothing is selected.
 var DEFAULT = {
-  color: null,      // null = no color attribute
-  size: "",         // "" = unset
-  face: "",         // "" = Default
+  color: null,        // null = no color attribute
+  size: "",           // "" = unset
+  face: "",           // "" = Default
+  tr: "",             // text transparency, "" = unset
   b: false, i: false, u: false, s: false,
   hl: false,
-  hlColor: "#000000"
+  hlColor: "#000000", // null = omit (Roblox default, unverified)
+  hlTr: "",
+  st: false,
+  stColor: "#000000", // null = omit (Roblox default, unverified)
+  stTh: "",
+  stTr: ""
 };
 var KEYS = Object.keys(DEFAULT);
 
 var state = {
   text: "",
-  chars: [],                         // one style object per UTF-16 unit of text
-  base: Object.assign({}, DEFAULT)   // style for text typed into an empty box
+  chars: [],                          // one style object per UTF-16 unit of text
+  base: Object.assign({}, DEFAULT),   // style for text typed into an empty box
+  opts: { shortHex: false, trShort: false }  // output options, whole document
 };
+
+// Preview stand-ins for omitted colors. Unverified: Roblox's docs don't state them.
+var PREVIEW_DEFAULT = { hlColor: "#FFFF00", stColor: "#000000" };
 
 function $(id) { return document.getElementById(id); }
 
@@ -265,7 +292,37 @@ function sizeOf(sty) {
   return sty.size !== "" && n > 0 ? n : 0;
 }
 
+// Number attribute as text, or "" when blank or outside [min, max].
+function num(v, min, max) {
+  if (v === "") return "";
+  var n = Number(v);
+  return isFinite(n) && n >= min && n <= max ? String(n) : "";
+}
+
+// "#RRGGBB" as written to the markup. Short hex rounds each channel to the
+// nearest of 00, 11 ... FF, so #3C7AE1 becomes #47D.
+function hex(c) {
+  if (!state.opts.shortHex) return c;
+  return "#" + [1, 3, 5].map(function (p) {
+    return Math.round(parseInt(c.substr(p, 2), 16) / 17).toString(16);
+  }).join("").toUpperCase();
+}
+
+// Full "#RRGGBB" Roblox would show for hex(c), for the preview.
+function shown(c) {
+  var h = hex(c);
+  return h.length === 4 ? "#" + h[1] + h[1] + h[2] + h[2] + h[3] + h[3] : h;
+}
+
+function rgba(c, transparency) {
+  var a = transparency === "" ? 1 : 1 - Number(transparency);
+  return "rgba(" + [1, 3, 5].map(function (p) {
+    return parseInt(c.substr(p, 2), 16);
+  }).join(",") + "," + a + ")";
+}
+
 function wrap(text, sty) {
+  var trName = state.opts.trShort ? "tr" : "transparency";
   var out = escapeText(text);
   if (sty.s) out = "<s>" + out + "</s>";
   if (sty.u) out = "<u>" + out + "</u>";
@@ -273,12 +330,27 @@ function wrap(text, sty) {
   if (sty.b) out = "<b>" + out + "</b>";
 
   var attrs = "";
-  if (sty.color) attrs += ' color="' + sty.color + '"';
+  if (sty.color) attrs += ' color="' + hex(sty.color) + '"';
   if (sizeOf(sty)) attrs += ' size="' + sizeOf(sty) + '"';
   if (sty.face) attrs += ' face="' + sty.face + '"';
+  if (num(sty.tr, 0, 1)) attrs += " " + trName + '="' + num(sty.tr, 0, 1) + '"';
   if (attrs) out = "<font" + attrs + ">" + out + "</font>";
 
-  if (sty.hl) out = '<mark color="' + sty.hlColor + '">' + out + "</mark>";
+  if (sty.st) {
+    // th and tr are documented short names for stroke.
+    attrs = "";
+    if (sty.stColor) attrs += ' color="' + hex(sty.stColor) + '"';
+    if (num(sty.stTh, 0, 1e6)) attrs += ' th="' + num(sty.stTh, 0, 1e6) + '"';
+    if (num(sty.stTr, 0, 1)) attrs += ' tr="' + num(sty.stTr, 0, 1) + '"';
+    out = "<stroke" + attrs + ">" + out + "</stroke>";
+  }
+
+  if (sty.hl) {
+    attrs = "";
+    if (sty.hlColor) attrs += ' color="' + hex(sty.hlColor) + '"';
+    if (num(sty.hlTr, 0, 1)) attrs += " " + trName + '="' + num(sty.hlTr, 0, 1) + '"';
+    out = "<mark" + attrs + ">" + out + "</mark>";
+  }
   return out;
 }
 
@@ -295,13 +367,20 @@ function renderPreview(st) {
     var mark = document.createElement("span"), span = document.createElement("span");
     var t = span.style;
     span.textContent = r.text;
-    t.color = sty.color || "";
+    t.color = rgba(sty.color ? shown(sty.color) : "#DDDDDD", num(sty.tr, 0, 1));
     t.fontSize = sizeOf(sty) ? sizeOf(sty) + "px" : "";
     t.fontFamily = pf ? '"rbx-' + pf[0] + '", sans-serif' : "";
     t.fontWeight = sty.b ? "700" : pf ? String(pf[1]) : "";
     t.fontStyle = sty.i || (pf && pf[2]) ? "italic" : "";
     t.textDecoration = ((sty.u ? "underline " : "") + (sty.s ? "line-through" : "")).trim();
-    mark.style.backgroundColor = sty.hl ? sty.hlColor : "";
+    if (sty.st) {
+      var th = num(sty.stTh, 0, 1e6) === "" ? 1 : Number(sty.stTh);
+      t.webkitTextStroke = 2 * th + "px " +
+        rgba(shown(sty.stColor || PREVIEW_DEFAULT.stColor), num(sty.stTr, 0, 1));
+      t.paintOrder = "stroke fill";
+    }
+    mark.style.backgroundColor = sty.hl
+      ? rgba(shown(sty.hlColor || PREVIEW_DEFAULT.hlColor), num(sty.hlTr, 0, 1)) : "";
     mark.appendChild(span);
     box.appendChild(mark);
   });
@@ -347,19 +426,29 @@ function onTextInput(next) {
   render();
 }
 
+var TOGGLES = ["b", "i", "u", "s", "hl", "st"];
+var NUMBERS = { size: "size", tr: "tr", hltr: "hlTr", stth: "stTh", sttr: "stTr" };
+var COLORS = { hlcolor: "hlColor", stcolor: "stColor" };  // with "<id>def" buttons
+
 function syncToolbar() {
   var sty = shownStyle(), r = range();
-  ["b", "i", "u", "s", "hl"].forEach(function (k) {
-    $(k).classList.toggle("on", sty[k]);
-  });
+  TOGGLES.forEach(function (k) { $(k).classList.toggle("on", sty[k]); });
   $("nocolor").classList.toggle("on", sty.color === null);
   Array.prototype.forEach.call($("swatches").children, function (el) {
     el.classList.toggle("on", el.dataset.c === sty.color);
   });
   if (sty.color) $("color").value = sty.color.toLowerCase();
-  $("hlcolor").value = sty.hlColor.toLowerCase();
-  if (document.activeElement !== $("size")) $("size").value = sty.size;
+  Object.keys(COLORS).forEach(function (id) {
+    var v = sty[COLORS[id]];
+    if (v) $(id).value = v.toLowerCase();
+    $(id + "def").classList.toggle("on", v === null);
+  });
+  Object.keys(NUMBERS).forEach(function (id) {
+    if (document.activeElement !== $(id)) $(id).value = sty[NUMBERS[id]];
+  });
   $("face").value = sty.face;
+  $("shorthex").checked = state.opts.shortHex;
+  $("trshort").checked = state.opts.trShort;
   $("scope").textContent = r[2]
     ? "Styling the selection (" + (r[1] - r[0]) + " characters)"
     : "Styling the whole text. Select part of it to style just that part.";
@@ -392,12 +481,21 @@ $("txt").oninput = function () { onTextInput(this.value); };
 document.addEventListener("selectionchange", syncToolbar);
 $("color").oninput = function () { apply("color", this.value.toUpperCase()); };
 $("nocolor").onclick = function () { apply("color", null); };
-$("size").oninput = function () { apply("size", this.value.trim()); };
 $("face").onchange = function () { apply("face", this.value); };
-["b", "i", "u", "s", "hl"].forEach(function (k) {
+TOGGLES.forEach(function (k) {
   $(k).onclick = function () { apply(k, !shownStyle()[k]); };
 });
-$("hlcolor").oninput = function () { apply("hlColor", this.value.toUpperCase()); };
+Object.keys(NUMBERS).forEach(function (id) {
+  $(id).oninput = function () { apply(NUMBERS[id], this.value.trim()); };
+});
+Object.keys(COLORS).forEach(function (id) {
+  $(id).oninput = function () { apply(COLORS[id], this.value.toUpperCase()); };
+  $(id + "def").onclick = function () {
+    apply(COLORS[id], shownStyle()[COLORS[id]] === null ? $(id).value.toUpperCase() : null);
+  };
+});
+$("shorthex").onchange = function () { state.opts.shortHex = this.checked; render(); };
+$("trshort").onchange = function () { state.opts.trShort = this.checked; render(); };
 
 var copyTimer;
 $("copy").onclick = function () {
